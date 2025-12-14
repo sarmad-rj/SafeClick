@@ -163,7 +163,8 @@ if __name__ == "__main__":
         "https://one.google.com/ai",
         "https://www.wikipedia.org/",
         "http://127.0.0.1/dashboard/",
-        "http://example.com/login"
+        "http://example.com/login",
+        "https://www.youtube.com/watch?v=MgGW3wcK-Nc"
     ]
 
     print("--- Starting Model Test ---")
