@@ -76,7 +76,7 @@ def predict(req: URLRequest):
     try:
         reasons = []
         
-        # Step 1: Extract features and generate initial heuristic findings
+        # Step 1: Extract features
         feats, found_words = extract_features(req.url)
         if not feats:
             return {"error": "Invalid URL for feature extraction"}
@@ -85,16 +85,38 @@ def predict(req: URLRequest):
         X = pd.DataFrame([feats], columns=feature_list)
         
         # Step 2: Get phishing probability from model
-        phishing_proba = model.predict_proba(X)[0][1]
+        phishing_proba = 0.0
+        try:
+            proba_array = model.predict_proba(X)
+            if proba_array is not None and len(proba_array) > 0 and len(proba_array[0]) > 1:
+                phishing_proba = proba_array[0][1]
+                if np.isnan(phishing_proba):
+                    phishing_proba = 0.0
+                    reasons.append("Model returned an invalid risk score (NaN).")
+            else:
+                raise ValueError("Invalid output from model.predict_proba")
+        except Exception as model_exc:
+            reasons.append(f"Model prediction failed: {type(model_exc).__name__}. Defaulting to SAFE.")
+            phishing_proba = 0.0
 
-        # Step 3: Initial classification based on notebook logic thresholds
+        # Step 3: Initial classification based on thresholds
         initial_prediction = "SAFE"
         if phishing_proba > 0.92:
             initial_prediction = "PHISHING"
         elif phishing_proba > 0.70:
             initial_prediction = "SUSPICIOUS"
 
-        # Step 4: Get domain age
+        # Step 4: Add URL-based heuristic reasons
+        if feats['suspicious_word_count'] > 0:
+            reasons.append(f"Contains suspicious keywords: {', '.join(found_words)}")
+        if feats['has_ip']:
+            reasons.append("URL uses an IP address instead of a domain name.")
+        if feats['subdomain_count'] > 2:
+            reasons.append(f"URL has a high number of subdomains ({feats['subdomain_count']}).")
+        if feats['has_https'] == 0:
+             reasons.append("Site is not using HTTPS (unencrypted).")
+
+        # Step 5: Get domain age (with robust error handling)
         domain = urlparse(req.url).netloc
         age_days = None
         is_registered = False
@@ -108,62 +130,42 @@ def predict(req: URLRequest):
                     creation_date = creation_date.replace(tzinfo=None)
                 age_days = (datetime.now() - creation_date).days
                 is_registered = True
-        except Exception as e: # Catch any exception during WHOIS lookup
-            # This ensures the backend doesn't crash and provides a reason
-            reasons.append(f"Could not determine domain age (WHOIS lookup failed, error: {type(e).__name__}).")
-            age_days = None
-            is_registered = False 
+        except Exception:
+            pass # We will add the reason in the next step if age is None
 
-        # Step 5: Generate heuristic reasons (unconditionally based on features, but added to list based on 'initial_prediction' or for clarity)
-        # Add URL-based heuristic reasons
-        if feats['suspicious_word_count'] > 0:
-            reasons.append(f"Contains suspicious keywords: {', '.join(found_words)}")
-        if feats['has_ip']:
-            reasons.append("URL uses an IP address instead of a domain name.")
-        if feats['subdomain_count'] > 2: # Consider a threshold for subdomain count
-            reasons.append(f"URL has a high number of subdomains ({feats['subdomain_count']}).")
-        
-        # Add domain age related heuristic reasons if applicable
+        # Step 6: Add age-related reasons
         if age_days is not None:
             if age_days < 30:
                 reasons.append(f"Domain is extremely new ({age_days} days old).")
             elif age_days < 180:
                 reasons.append(f"Domain is relatively new ({age_days} days old).")
-        else: # If age could not be determined, and it's not a safe prediction
-            if initial_prediction in ["PHISHING", "SUSPICIOUS"]:
-                reasons.append("Could not determine domain age (potentially unregistered or new TLD).")
+        else:
+            reasons.append("Could not determine domain age (WHOIS lookup failed).")
 
-
-        # Step 6: Apply final override rule
+        # Step 7: Apply final override rule
         final_prediction = initial_prediction
         if age_days and age_days > 365 and initial_prediction in ["PHISHING", "SUSPICIOUS"]:
             final_prediction = "SAFE"
             
-        # Step 7: Adjust reasons based on final_prediction for logical consistency
+        # Step 8: Adjust reasons for logical consistency
         if final_prediction == "SAFE":
-            # Case 1: Overridden to SAFE because of old age
             if age_days and age_days > 365 and initial_prediction in ["PHISHING", "SUSPICIOUS"]:
                 reasons = [f"Override: Marked as SAFE due to very old domain age ({age_days} days)."]
-            # Case 2: Some minor risks found, but model/age deemed it SAFE overall
             elif len(reasons) > 0:
                 reasons.insert(0, "Overall analysis determined the site to be SAFE despite some minor risk factors.")
-            # Case 3: No heuristic risks found
             else:
-                # If score is negligible, it's truly clean
                 if phishing_proba < 0.10:
                     reasons = ["No specific risk factors found."]
-                # If score is not negligible, explain that the model had some concern
                 else:
                     reasons = ["Model score is low, but not zero. Considered SAFE after overall analysis."]
         elif not reasons: 
-             # Case 4: It's risky, but we couldn't find a clear heuristic reason why
              reasons.append("Model indicated high risk, but no clear heuristic factors were identified.")
 
-        # Step 8: Formulate response
+        # Step 9: Formulate response
         result = {
             "url": req.url,
             "prediction": final_prediction,
-            "risk_score": round(phishing_proba * 100, 2),
+            "risk_score": float(round(phishing_proba * 100, 2)),
             "domain_age_days": age_days,
             "registered": is_registered,
             "reasons": reasons
