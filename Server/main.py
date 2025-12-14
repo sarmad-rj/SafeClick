@@ -108,8 +108,11 @@ def predict(req: URLRequest):
                     creation_date = creation_date.replace(tzinfo=None)
                 age_days = (datetime.now() - creation_date).days
                 is_registered = True
-        except:
-            pass 
+        except Exception as e: # Catch any exception during WHOIS lookup
+            # This ensures the backend doesn't crash and provides a reason
+            reasons.append(f"Could not determine domain age (WHOIS lookup failed, error: {type(e).__name__}).")
+            age_days = None
+            is_registered = False 
 
         # Step 5: Generate heuristic reasons (unconditionally based on features, but added to list based on 'initial_prediction' or for clarity)
         # Add URL-based heuristic reasons
