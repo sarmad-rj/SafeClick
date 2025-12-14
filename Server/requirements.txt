@@ -1,0 +1,7 @@
+fastapi
+pandas
+scikit-learn
+joblib
+python-whois
+numpy
+uvicorn
